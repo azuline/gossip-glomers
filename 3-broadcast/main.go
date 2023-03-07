@@ -114,11 +114,6 @@ func main() {
 		}
 	}
 
-	// TODO: Not the happiest with this synchronizeWithNeighbor setup. I think
-	// if possible, bootstrapping and steady state should be two separate
-	// functions, and bootstrapping can be done by copying the messages of all
-	// neighbors on start. Unsure how startup semantics work in Maelstrom =/
-
 	// synchronizeWithNeighbor reads a neighbor's messages and diffs their
 	// messages against this node's set of messages. For the messages that this
 	// node has, but the other node doesn't have, we send them over.
