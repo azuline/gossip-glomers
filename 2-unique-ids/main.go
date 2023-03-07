@@ -30,7 +30,7 @@ func main() {
 
 		id, err := generateUniqueID()
 		if err != nil {
-			log.Fatal(err)
+			return err
 		}
 
 		resp := Response{
