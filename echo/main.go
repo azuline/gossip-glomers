@@ -7,21 +7,34 @@ import (
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
+type Request struct {
+	Type  string `json:"type"`
+	MsgID int    `json:"msg_id"`
+	Echo  string `json:"echo"`
+}
+
+type Response struct {
+	Type  string `json:"type"`
+	MsgID int    `json:"msg_id"`
+	Echo  string `json:"echo"`
+}
+
 func main() {
 	n := maelstrom.NewNode()
 
 	n.Handle("echo", func(msg maelstrom.Message) error {
-		// Unmarshal the message body as an loosely-typed map.
-		var body map[string]any
-		if err := json.Unmarshal(msg.Body, &body); err != nil {
+		var req Request
+		if err := json.Unmarshal(msg.Body, &req); err != nil {
 			return err
 		}
 
-		// Update the message type to return back.
-		body["type"] = "echo_ok"
+		resp := Response{
+			Type:  "echo_ok",
+			MsgID: req.MsgID,
+			Echo:  req.Echo,
+		}
 
-		// Echo the original message back with the updated message type.
-		return n.Reply(msg, body)
+		return n.Reply(msg, resp)
 	})
 
 	if err := n.Run(); err != nil {

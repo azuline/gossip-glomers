@@ -1,2 +1,4 @@
 github.com/jepsen-io/maelstrom/demo/go v0.0.0-20230228144258-93f15782f204 h1:MxoD0ZiUM8roAesy3vD5SvYxt2sY7FJQquoXWAfvAmY=
 github.com/jepsen-io/maelstrom/demo/go v0.0.0-20230228144258-93f15782f204/go.mod h1:i6aVIs5AIOOaQF1lAisBm7DDeWM1Iopf+26UxjagsCU=
+github.com/matoous/go-nanoid v1.5.0 h1:VRorl6uCngneC4oUQqOYtO3S0H5QKFtKuKycFG3euek=
+github.com/matoous/go-nanoid v1.5.0/go.mod h1:zyD2a71IubI24efhpvkJz+ZwfwagzgSO6UNiFsZKN7U=
