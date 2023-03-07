@@ -10,8 +10,10 @@ test-unique-ids: unique-ids
 
 broadcast:
 	go build -o bin/broadcast ./3-broadcast/main.go
-test-broadcast: broadcast
+test-broadcast-a: broadcast
 	./maelstrom/maelstrom test -w broadcast --bin ./bin/broadcast --node-count 1 --time-limit 20 --rate 10
+test-broadcast-b: broadcast
+	./maelstrom/maelstrom test -w broadcast --bin ./bin/broadcast --node-count 5 --time-limit 20 --rate 10
 
 clean:
 	rm bin/*
