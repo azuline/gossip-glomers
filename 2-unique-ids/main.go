@@ -8,12 +8,12 @@ import (
 	gonanoid "github.com/matoous/go-nanoid"
 )
 
-type Request struct {
+type In struct {
 	Type  string `json:"type"`
 	MsgID int    `json:"msg_id"`
 }
 
-type Response struct {
+type Out struct {
 	Type  string `json:"type"`
 	ID    string `json:"id"`
 	MsgID int    `json:"msg_id"`
@@ -23,7 +23,7 @@ func main() {
 	n := maelstrom.NewNode()
 
 	n.Handle("generate", func(msg maelstrom.Message) error {
-		var req Request
+		var req In
 		if err := json.Unmarshal(msg.Body, &req); err != nil {
 			return err
 		}
@@ -33,7 +33,7 @@ func main() {
 			return err
 		}
 
-		resp := Response{
+		resp := Out{
 			Type:  "generate_ok",
 			ID:    id,
 			MsgID: req.MsgID,

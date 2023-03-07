@@ -16,12 +16,8 @@ type (
 )
 
 const (
-	BroadcastMsgType MessageInType = "broadcast"
-	// Broadcast peer is a peer2peer broadcast that does not check for a
-	// response.
-	BroadcastPeerMsgType MessageOutType = "broadcast_peer"
-	// Broadcast batch is a peer2peer broadcast that send a lot of messages and
-	// does not check for a response.
+	BroadcastMsgType        MessageInType  = "broadcast"
+	BroadcastPeerMsgType    MessageOutType = "broadcast_peer"
 	BroadcastBatchMsgType   MessageOutType = "broadcast_batch"
 	ReadMsgType             MessageInType  = "read"
 	TopologyMsgType         MessageInType  = "topology"
@@ -34,65 +30,56 @@ const (
 
 type Topology = map[string][]string
 
-type BroadcastRequest struct {
+type BroadcastIn struct {
 	MsgID   int `json:"msg_id"`
 	Message int `json:"message"`
 }
-type BroadcastResponse struct {
+type BroadcastOut struct {
 	Type  MessageOutType `json:"type"`
 	MsgID int            `json:"msg_id"`
 }
-type BroadcastNeighborRequest struct {
-	Type    MessageInType `json:"type"`
-	Message int           `json:"message"`
-}
 
-type BroadcastPeerRequest struct {
+type BroadcastPeerIn struct {
 	Message int `json:"message"`
 }
-type BroadcastPeerNeighborRequest struct {
+type BroadcastPeerToPeer struct {
 	Type    MessageInType `json:"type"`
 	Message int           `json:"message"`
 }
 
-type BroadcastBatchRequest struct {
+type BroadcastBatchIn struct {
 	Messages []int `json:"messages"`
 }
-type BroadcastBatchNeighborRequest struct {
+type BroadcastToPeer struct {
 	Type     MessageInType `json:"type"`
 	Messages []int         `json:"messages"`
 }
 
-type ReadRequest struct {
+type ReadIn struct {
 	MsgID int `json:"msg_id"`
 }
-type ReadResponse struct {
+type ReadOut struct {
 	Type     MessageOutType `json:"type"`
 	MsgID    int            `json:"msg_id"`
 	Messages []int          `json:"messages"`
 }
 
-type TopologyRequest struct {
+type TopologyIn struct {
 	MsgID    int      `json:"msg_id"`
 	Topology Topology `json:"topology"`
 }
-type TopologyResponse struct {
+type TopologyOut struct {
 	Type  MessageOutType `json:"type"`
 	MsgID int            `json:"msg_id"`
 }
 
 func main() {
-	// TODO: Goroutine error handling :shrug:
-
 	ctx := context.Background()
 	n := maelstrom.NewNode()
 
-	// ASSUMPTION: Topology is populated at the start of the node's lifetime.
-
-	// Define read/write functions to internal in-memory stores. Isolate the
-	// mutex + value in a private scope so that downstream code can't directly
-	// work with it.
-
+	// Define read/write functions to messages. Isolate the mutex + value in a
+	// private scope so that downstream code can't directly work with it.
+	//
 	// appendMessage returns whether or not the message was appended. We don't
 	// append the message if we already had it stored.
 	var appendMessage func(int) bool
@@ -102,6 +89,7 @@ func main() {
 		var mu sync.RWMutex
 		var stored []int
 		check := make(map[int]struct{})
+
 		appendMessage = func(value int) bool {
 			mu.Lock()
 			defer mu.Unlock()
@@ -131,22 +119,8 @@ func main() {
 		}
 	}
 
-	var setTopology func(Topology)
-	var topology func() Topology
-	{
-		var mu sync.RWMutex
-		var stored Topology
-		setTopology = func(t Topology) {
-			mu.Lock()
-			defer mu.Unlock()
-			stored = t
-		}
-		topology = func() Topology {
-			mu.RLock()
-			defer mu.RUnlock()
-			return stored
-		}
-	}
+	// ASSUMPTION: There will be no concurrent writes to topology.
+	var topology Topology
 
 	// Kick off an asynchronous loop that syncs all messages with neighbors every second.
 	go func(ctx context.Context) {
@@ -154,9 +128,9 @@ func main() {
 		for {
 			select {
 			case <-tick.C:
-				for _, neighbor := range topology()[n.ID()] {
+				for _, neighbor := range topology[n.ID()] {
 					go func(neighbor string) {
-						syncReq := BroadcastBatchNeighborRequest{Type: BroadcastBatchMsgType, Messages: messages()}
+						syncReq := BroadcastToPeer{Type: BroadcastBatchMsgType, Messages: messages()}
 						if err := n.Send(neighbor, syncReq); err != nil {
 							log.Fatal(err)
 						}
@@ -168,8 +142,10 @@ func main() {
 		}
 	}(ctx)
 
+	// Broadcast Peer receives a broadcast from a peer node that does not
+	// require acknowledgement. Failures are acceptable for this operation.
 	n.Handle(BroadcastPeerMsgType, func(msg maelstrom.Message) error {
-		var req BroadcastPeerRequest
+		var req BroadcastPeerIn
 		if err := json.Unmarshal(msg.Body, &req); err != nil {
 			return err
 		}
@@ -177,8 +153,10 @@ func main() {
 		return nil
 	})
 
+	// Broadcast Batch receives a broadcast of multiple messages from a peer
+	// node that does not require acknowledgement.
 	n.Handle(BroadcastBatchMsgType, func(msg maelstrom.Message) error {
-		var req BroadcastBatchRequest
+		var req BroadcastBatchIn
 		if err := json.Unmarshal(msg.Body, &req); err != nil {
 			return err
 		}
@@ -187,7 +165,7 @@ func main() {
 	})
 
 	n.Handle(BroadcastMsgType, func(msg maelstrom.Message) error {
-		var req BroadcastRequest
+		var req BroadcastIn
 		if err := json.Unmarshal(msg.Body, &req); err != nil {
 			return err
 		}
@@ -198,42 +176,32 @@ func main() {
 			// OK. If the message fails (e.g. due to network partition), it
 			// will be re-sent later with the per-second sync request.
 			for _, node := range n.NodeIDs() {
-				syncReq := BroadcastPeerNeighborRequest{Type: BroadcastPeerMsgType, Message: req.Message}
+				syncReq := BroadcastPeerToPeer{Type: BroadcastPeerMsgType, Message: req.Message}
 				if err := n.Send(node, syncReq); err != nil {
 					log.Fatal(err)
 				}
 			}
 		}
-		resp := BroadcastResponse{
-			Type:  BroadcastOKMsgType,
-			MsgID: req.MsgID,
-		}
+		resp := BroadcastOut{Type: BroadcastOKMsgType, MsgID: req.MsgID}
 		return n.Reply(msg, resp)
 	})
 
 	n.Handle(ReadMsgType, func(msg maelstrom.Message) error {
-		var req ReadRequest
+		var req ReadIn
 		if err := json.Unmarshal(msg.Body, &req); err != nil {
 			return err
 		}
-		resp := ReadResponse{
-			Type:     ReadOKMsgType,
-			Messages: messages(),
-			MsgID:    req.MsgID,
-		}
+		resp := ReadOut{Type: ReadOKMsgType, Messages: messages(), MsgID: req.MsgID}
 		return n.Reply(msg, resp)
 	})
 
 	n.Handle(TopologyMsgType, func(msg maelstrom.Message) error {
-		var req TopologyRequest
+		var req TopologyIn
 		if err := json.Unmarshal(msg.Body, &req); err != nil {
 			return err
 		}
-		setTopology(req.Topology)
-		resp := TopologyResponse{
-			Type:  TopologyOKMsgType,
-			MsgID: req.MsgID,
-		}
+		topology = req.Topology
+		resp := TopologyOut{Type: TopologyOKMsgType, MsgID: req.MsgID}
 		return n.Reply(msg, resp)
 	})
 

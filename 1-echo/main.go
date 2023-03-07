@@ -7,13 +7,13 @@ import (
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
-type Request struct {
+type In struct {
 	Type  string `json:"type"`
 	MsgID int    `json:"msg_id"`
 	Echo  string `json:"echo"`
 }
 
-type Response struct {
+type Out struct {
 	Type  string `json:"type"`
 	MsgID int    `json:"msg_id"`
 	Echo  string `json:"echo"`
@@ -23,12 +23,12 @@ func main() {
 	n := maelstrom.NewNode()
 
 	n.Handle("echo", func(msg maelstrom.Message) error {
-		var req Request
+		var req In
 		if err := json.Unmarshal(msg.Body, &req); err != nil {
 			return err
 		}
 
-		resp := Response{
+		resp := Out{
 			Type:  "echo_ok",
 			MsgID: req.MsgID,
 			Echo:  req.Echo,
