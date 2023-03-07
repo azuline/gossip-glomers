@@ -16,11 +16,17 @@ type (
 )
 
 const (
-	BroadcastMsgType        MessageInType  = "broadcast"
+	BroadcastMsgType MessageInType = "broadcast"
+	// Broadcast peer is a peer2peer broadcast that does not check for a
+	// response.
+	BroadcastPeerMsgType MessageOutType = "broadcast_peer"
+	// Broadcast batch is a peer2peer broadcast that send a lot of messages and
+	// does not check for a response.
 	BroadcastBatchMsgType   MessageOutType = "broadcast_batch"
 	ReadMsgType             MessageInType  = "read"
 	TopologyMsgType         MessageInType  = "topology"
 	BroadcastOKMsgType      MessageOutType = "broadcast_ok"
+	BroadcastPeerOKMsgType  MessageOutType = "broadcast_peer_ok"
 	BroadcastBatchOKMsgType MessageOutType = "broadcast_batch_ok"
 	ReadOKMsgType           MessageOutType = "read_ok"
 	TopologyOKMsgType       MessageOutType = "topology_ok"
@@ -41,6 +47,14 @@ type BroadcastNeighborRequest struct {
 	Message int           `json:"message"`
 }
 
+type BroadcastPeerRequest struct {
+	Message int `json:"message"`
+}
+type BroadcastPeerNeighborRequest struct {
+	Type    MessageInType `json:"type"`
+	Message int           `json:"message"`
+}
+
 type BroadcastBatchRequest struct {
 	Messages []int `json:"messages"`
 }
@@ -56,9 +70,6 @@ type ReadResponse struct {
 	Type     MessageOutType `json:"type"`
 	MsgID    int            `json:"msg_id"`
 	Messages []int          `json:"messages"`
-}
-type ReadNeighborRequest struct {
-	Type MessageInType `json:"type"`
 }
 
 type TopologyRequest struct {
@@ -137,45 +148,19 @@ func main() {
 		}
 	}
 
-	// synchronizeWithNeighbor reads a neighbor's messages and diffs their
-	// messages against this node's set of messages. For the messages that this
-	// node has, but the other node doesn't have, we send them over.
-	synchronizeWithNeighbor := func(ctx context.Context, neighbor string) {
-		readMsg, err := n.SyncRPC(ctx, neighbor, ReadNeighborRequest{Type: ReadMsgType})
-		if err != nil {
-			log.Fatal(err)
-		}
-		var readResp ReadResponse
-		if err := json.Unmarshal(readMsg.Body, &readResp); err != nil {
-			log.Fatal(err)
-		}
-
-		neighborHas := make(map[int]struct{})
-		for _, m := range readResp.Messages {
-			neighborHas[m] = struct{}{}
-		}
-
-		var messagesToBroadcast []int
-		for _, m := range messages() {
-			if _, ok := neighborHas[m]; !ok {
-				messagesToBroadcast = append(messagesToBroadcast, m)
-			}
-		}
-
-		syncReq := BroadcastBatchNeighborRequest{Type: BroadcastBatchMsgType, Messages: messagesToBroadcast}
-		if err := n.Send(neighbor, syncReq); err != nil {
-			log.Fatal(err)
-		}
-	}
-
-	// Kick off an asynchronous loop that runs synchronizeWithNeighbor every second.
+	// Kick off an asynchronous loop that syncs all messages with neighbors every second.
 	go func(ctx context.Context) {
 		tick := time.NewTicker(time.Second)
 		for {
 			select {
 			case <-tick.C:
 				for _, neighbor := range topology()[n.ID()] {
-					go synchronizeWithNeighbor(ctx, neighbor)
+					go func(neighbor string) {
+						syncReq := BroadcastBatchNeighborRequest{Type: BroadcastBatchMsgType, Messages: messages()}
+						if err := n.Send(neighbor, syncReq); err != nil {
+							log.Fatal(err)
+						}
+					}(neighbor)
 				}
 			case <-ctx.Done():
 				return
@@ -183,35 +168,13 @@ func main() {
 		}
 	}(ctx)
 
-	n.Handle(BroadcastMsgType, func(msg maelstrom.Message) error {
-		var req BroadcastRequest
+	n.Handle(BroadcastPeerMsgType, func(msg maelstrom.Message) error {
+		var req BroadcastPeerRequest
 		if err := json.Unmarshal(msg.Body, &req); err != nil {
 			return err
 		}
-		if appendMessage(req.Message) {
-			// TODO: Potentially delete this, IDK.
-			// Sends the new message to every neighboring node. This is
-			// intended to be called upon receiving a new message. While this
-			// message will eventually replicate across all nodes from the
-			// synchronize with neighbor per-second job, we can use this
-			// function to replicate with more liveness.
-			go func(message int) {
-				for _, neighbor := range topology()[n.ID()] {
-					syncReq := BroadcastNeighborRequest{Type: BroadcastMsgType, Message: message}
-					err := n.RPC(neighbor, syncReq, func(msg maelstrom.Message) error {
-						return nil
-					})
-					if err != nil {
-						log.Fatal(err)
-					}
-				}
-			}(req.Message)
-		}
-		resp := BroadcastResponse{
-			Type:  BroadcastOKMsgType,
-			MsgID: req.MsgID,
-		}
-		return n.Reply(msg, resp)
+		appendMessage(req.Message)
+		return nil
 	})
 
 	n.Handle(BroadcastBatchMsgType, func(msg maelstrom.Message) error {
@@ -221,6 +184,31 @@ func main() {
 		}
 		appendMessages(req.Messages)
 		return nil
+	})
+
+	n.Handle(BroadcastMsgType, func(msg maelstrom.Message) error {
+		var req BroadcastRequest
+		if err := json.Unmarshal(msg.Body, &req); err != nil {
+			return err
+		}
+		if appendMessage(req.Message) {
+			// Sends the new message to every node in the network. This is
+			// intended to be called upon receiving a new message. Send a
+			// message with the peer message type, which does not look for an
+			// OK. If the message fails (e.g. due to network partition), it
+			// will be re-sent later with the per-second sync request.
+			for _, node := range n.NodeIDs() {
+				syncReq := BroadcastPeerNeighborRequest{Type: BroadcastPeerMsgType, Message: req.Message}
+				if err := n.Send(node, syncReq); err != nil {
+					log.Fatal(err)
+				}
+			}
+		}
+		resp := BroadcastResponse{
+			Type:  BroadcastOKMsgType,
+			MsgID: req.MsgID,
+		}
+		return n.Reply(msg, resp)
 	})
 
 	n.Handle(ReadMsgType, func(msg maelstrom.Message) error {
