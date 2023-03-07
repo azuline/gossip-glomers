@@ -16,12 +16,14 @@ type (
 )
 
 const (
-	BroadcastType   MessageInType  = "broadcast"
-	ReadType        MessageInType  = "read"
-	TopologyType    MessageInType  = "topology"
-	BroadcastOKType MessageOutType = "broadcast_ok"
-	ReadOKType      MessageOutType = "read_ok"
-	TopologyOKType  MessageOutType = "topology_ok"
+	BroadcastMsgType        MessageInType  = "broadcast"
+	BroadcastBatchMsgType   MessageOutType = "broadcast_batch"
+	ReadMsgType             MessageInType  = "read"
+	TopologyMsgType         MessageInType  = "topology"
+	BroadcastOKMsgType      MessageOutType = "broadcast_ok"
+	BroadcastBatchOKMsgType MessageOutType = "broadcast_batch_ok"
+	ReadOKMsgType           MessageOutType = "read_ok"
+	TopologyOKMsgType       MessageOutType = "topology_ok"
 )
 
 type Topology = map[string][]string
@@ -35,8 +37,16 @@ type BroadcastResponse struct {
 	MsgID int            `json:"msg_id"`
 }
 type BroadcastNeighborRequest struct {
-	Type    string `json:"type"`
-	Message int    `json:"message"`
+	Type    MessageInType `json:"type"`
+	Message int           `json:"message"`
+}
+
+type BroadcastBatchRequest struct {
+	Messages []int `json:"messages"`
+}
+type BroadcastBatchNeighborRequest struct {
+	Type     MessageInType `json:"type"`
+	Messages []int         `json:"messages"`
 }
 
 type ReadRequest struct {
@@ -48,7 +58,7 @@ type ReadResponse struct {
 	Messages []int          `json:"messages"`
 }
 type ReadNeighborRequest struct {
-	Type string `json:"type"`
+	Type MessageInType `json:"type"`
 }
 
 type TopologyRequest struct {
@@ -75,10 +85,12 @@ func main() {
 	// appendMessage returns whether or not the message was appended. We don't
 	// append the message if we already had it stored.
 	var appendMessage func(int) bool
+	var appendMessages func([]int)
 	var messages func() []int
 	{
 		var mu sync.RWMutex
 		var stored []int
+		check := make(map[int]struct{})
 		appendMessage = func(value int) bool {
 			mu.Lock()
 			defer mu.Unlock()
@@ -88,7 +100,18 @@ func main() {
 				}
 			}
 			stored = append(stored, value)
+			check[value] = struct{}{}
 			return true
+		}
+		appendMessages = func(values []int) {
+			mu.Lock()
+			defer mu.Unlock()
+			for _, v := range values {
+				if _, ok := check[v]; !ok {
+					stored = append(stored, v)
+					check[v] = struct{}{}
+				}
+			}
 		}
 		messages = func() []int {
 			mu.RLock()
@@ -118,7 +141,7 @@ func main() {
 	// messages against this node's set of messages. For the messages that this
 	// node has, but the other node doesn't have, we send them over.
 	synchronizeWithNeighbor := func(ctx context.Context, neighbor string) {
-		readMsg, err := n.SyncRPC(ctx, neighbor, ReadNeighborRequest{Type: ReadType})
+		readMsg, err := n.SyncRPC(ctx, neighbor, ReadNeighborRequest{Type: ReadMsgType})
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -139,14 +162,9 @@ func main() {
 			}
 		}
 
-		for _, m := range messagesToBroadcast {
-			syncReq := BroadcastNeighborRequest{Type: BroadcastType, Message: m}
-			err := n.RPC(neighbor, syncReq, func(msg maelstrom.Message) error {
-				return nil
-			})
-			if err != nil {
-				log.Fatal(err)
-			}
+		syncReq := BroadcastBatchNeighborRequest{Type: BroadcastBatchMsgType, Messages: messagesToBroadcast}
+		if err := n.Send(neighbor, syncReq); err != nil {
+			log.Fatal(err)
 		}
 	}
 
@@ -165,59 +183,67 @@ func main() {
 		}
 	}(ctx)
 
-	// broadcastNewMessageToNeighbors sends a message to every neighboring
-	// node. This is intended to be called upon receiving a new message. While
-	// this message will eventually replicate across all nodes from the
-	// synchronize with neighbor per-second job, we can use this function to
-	// replicate with more liveness.
-	broadcastNewMessageToNeighbors := func(ctx context.Context, message int) {
-		for _, neighbor := range topology()[n.ID()] {
-			syncReq := BroadcastNeighborRequest{Type: BroadcastType, Message: message}
-			err := n.RPC(neighbor, syncReq, func(msg maelstrom.Message) error {
-				return nil
-			})
-			if err != nil {
-				log.Fatal(err)
-			}
-		}
-	}
-
-	n.Handle("broadcast", func(msg maelstrom.Message) error {
+	n.Handle(BroadcastMsgType, func(msg maelstrom.Message) error {
 		var req BroadcastRequest
 		if err := json.Unmarshal(msg.Body, &req); err != nil {
 			return err
 		}
 		if appendMessage(req.Message) {
-			broadcastNewMessageToNeighbors(ctx, req.Message)
+			// TODO: Potentially delete this, IDK.
+			// Sends the new message to every neighboring node. This is
+			// intended to be called upon receiving a new message. While this
+			// message will eventually replicate across all nodes from the
+			// synchronize with neighbor per-second job, we can use this
+			// function to replicate with more liveness.
+			go func(message int) {
+				for _, neighbor := range topology()[n.ID()] {
+					syncReq := BroadcastNeighborRequest{Type: BroadcastMsgType, Message: message}
+					err := n.RPC(neighbor, syncReq, func(msg maelstrom.Message) error {
+						return nil
+					})
+					if err != nil {
+						log.Fatal(err)
+					}
+				}
+			}(req.Message)
 		}
 		resp := BroadcastResponse{
-			Type:  BroadcastOKType,
+			Type:  BroadcastOKMsgType,
 			MsgID: req.MsgID,
 		}
 		return n.Reply(msg, resp)
 	})
 
-	n.Handle("read", func(msg maelstrom.Message) error {
+	n.Handle(BroadcastBatchMsgType, func(msg maelstrom.Message) error {
+		var req BroadcastBatchRequest
+		if err := json.Unmarshal(msg.Body, &req); err != nil {
+			return err
+		}
+		appendMessages(req.Messages)
+		return nil
+	})
+
+	n.Handle(ReadMsgType, func(msg maelstrom.Message) error {
 		var req ReadRequest
 		if err := json.Unmarshal(msg.Body, &req); err != nil {
 			return err
 		}
 		resp := ReadResponse{
-			Type:     ReadOKType,
+			Type:     ReadOKMsgType,
 			Messages: messages(),
 			MsgID:    req.MsgID,
 		}
 		return n.Reply(msg, resp)
 	})
 
-	n.Handle("topology", func(msg maelstrom.Message) error {
+	n.Handle(TopologyMsgType, func(msg maelstrom.Message) error {
 		var req TopologyRequest
 		if err := json.Unmarshal(msg.Body, &req); err != nil {
 			return err
 		}
 		setTopology(req.Topology)
 		resp := TopologyResponse{
-			Type:  TopologyOKType,
+			Type:  TopologyOKMsgType,
 			MsgID: req.MsgID,
 		}
 		return n.Reply(msg, resp)
