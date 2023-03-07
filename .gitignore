@@ -15,6 +15,4 @@
 .cache
 result
 bin
-
-# Local testing
-.env
+store

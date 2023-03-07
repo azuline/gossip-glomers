@@ -15,13 +15,17 @@
               name = "glomers dev shell";
               paths = with pkgs; [
                 gnumake
-                golangci-lint
+                # golang
                 go_1_18
                 gopls
                 gopkgs
                 go-outline
                 delve
                 gotools
+                # maelstrom
+                openjdk
+                graphviz
+                gnuplot
               ];
             })
           ];
