@@ -19,6 +19,11 @@ test-broadcast-c: broadcast
 test-broadcast-d: broadcast
 	./maelstrom/maelstrom test -w broadcast --bin ./bin/broadcast --node-count 25 --time-limit 20 --rate 100 --latency 100
 
+counter:
+	go build -o bin/counter ./4-counter/main.go
+test-counter: counter
+	./maelstrom/maelstrom test -w g-counter --bin ./bin/counter --node-count 3 --rate 100 --time-limit 20 --nemesis partition
+
 clean:
 	rm bin/*
 serve:

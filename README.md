@@ -8,3 +8,4 @@ My solutions for https://fly.io/dist-sys/.
   - [x] 3c. Fault Tolerant Broadcast
   - [x] 3d. Broadcast Efficiency I
   - [x] 3e. Broadcast Efficiency II
+- [ ] 4. Grow Only Counter
