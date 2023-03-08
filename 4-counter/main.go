@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
-	"sync"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
@@ -46,21 +45,16 @@ func main() {
 	n := maelstrom.NewNode()
 	kv := maelstrom.NewSeqKV(n)
 
-	var value func() int
-	var incrValue func(int)
-	{
-		var mu sync.RWMutex
-		var stored int
-		value = func() int {
-			mu.RLock()
-			defer mu.RUnlock()
-			return stored
+	readIntDefault0 := func(node string) (int, error) {
+		nodeValue, err := kv.ReadInt(ctx, node)
+		if err != nil {
+			var rpcErr *maelstrom.RPCError
+			if errors.As(err, &rpcErr) && rpcErr.Code == maelstrom.KeyDoesNotExist {
+				return 0, nil
+			}
+			return 0, err
 		}
-		incrValue = func(delta int) {
-			mu.Lock()
-			defer mu.Unlock()
-			stored += delta
-		}
+		return nodeValue, nil
 	}
 
 	n.Handle(AddMsgType, func(msg maelstrom.Message) error {
@@ -68,9 +62,21 @@ func main() {
 		if err := json.Unmarshal(msg.Body, &req); err != nil {
 			return err
 		}
-		incrValue(req.Delta)
-		if err := kv.Write(ctx, n.ID(), value()); err != nil {
-			return err
+		// Keep trying to increment the value atomically until we succeed.
+		for {
+			from, err := readIntDefault0(n.ID())
+			if err != nil {
+				return err
+			}
+			to := from + req.Delta
+			if err := kv.CompareAndSwap(ctx, n.ID(), from, to, true); err != nil {
+				var rpcErr *maelstrom.RPCError
+				if errors.As(err, &rpcErr) && rpcErr.Code == maelstrom.PreconditionFailed {
+					continue
+				}
+				return err
+			}
+			break
 		}
 		return n.Reply(msg, AddOut{Type: AddOKMsgType, MsgID: req.MsgID})
 	})
@@ -80,18 +86,10 @@ func main() {
 		if err := json.Unmarshal(msg.Body, &req); err != nil {
 			return err
 		}
-		ctr := value()
+		ctr := 0
 		for _, node := range n.NodeIDs() {
-			// We already fetched our own value from memory; skip fetch our own value from the KV store.
-			if node == n.ID() {
-				continue
-			}
-			nodeValue, err := kv.ReadInt(ctx, node)
+			nodeValue, err := readIntDefault0(node)
 			if err != nil {
-				var rpcErr *maelstrom.RPCError
-				if errors.As(err, &rpcErr) && rpcErr.Code == maelstrom.KeyDoesNotExist {
-					continue
-				}
 				return err
 			}
 			ctr += nodeValue
